@@ -1,0 +1,31 @@
+Ini pertanyaan yang sangat bagus dan kritis! Kita harus memastikan apakah Replit Agent **hanya memperbaiki error** (seperti typo `audio_donwloader.py` yang dia sebutkan) atau apakah dia **menimpa/menghapus logika custom** (multi-Cloudinary, filter durasi 7 menit) yang sudah kita buat sebelumnya.
+
+Karena Replit Agent bekerja paling optimal dengan bahasa Inggris, silakan **copy-paste teks di bawah ini** ke dalam chat Replit Agent Anda:
+
+***
+
+**Copy teks ini ke Replit Agent:**
+
+> "Great job getting it to run! Before we proceed, I need to verify the code changes. 
+> 
+> Did you keep the custom logic we previously implemented for the audio downloader? Specifically:
+> 1. The multi-Cloudinary auto-failover logic that reads from the `CLOUDINARY_ACCOUNTS_JSON` environment variable.
+> 2. The video duration filter (`MAX_VIDEO_DURATION=420` or 7 minutes).
+> 3. The 128kbps audio compression (`AUDIO_BITRATE=128`).
+> 
+> Or did you rewrite the `audio_downloader.py` (or the new service file) with your own default logic? 
+> 
+> Please show me the current full code of the audio downloader service file so I can verify if our custom Cloudinary logic is still there. Also, please confirm if the app is correctly reading the `CLOUDINARY_ACCOUNTS_JSON` secret."
+
+***
+
+### 💡 Mengapa kita harus tanya ini?
+1. **Typo yang dia sebutkan:** Replit Agent menyebutkan ada file bernama `audio_donwloader.py` (kurang huruf 'l') yang indentasinya rusak. Kemungkinan besar dia membuat file baru atau memperbaiki file itu. Kita perlu tahu apakah dia memakai kode *kita* atau kode *bawaan* dia.
+2. **Package Conflict:** Dia menyebutkan ada konflik antara package PyPI `youtube-search` dan folder lokal `src/youtube_search`. Ini bagus karena dia sudah memperbaikinya, tapi kita harus pastikan endpoint downloadnya masih utuh.
+3. **Port 5000:** Replit default menggunakan port 5000. Nanti saat kita hubungkan ke PHP, kita harus ingat URL-nya menggunakan port ini (atau URL default Replit yang sudah di-routing).
+
+###  Apa yang harus Anda lakukan setelah dia menjawab?
+* **Jika dia bilang "Ya, logika Cloudinary masih ada":** Berarti aman! Anda tinggal menambahkan Environment Variables (Secrets) di Replit dan langsung bisa dipakai.
+* **Jika dia bilang "Tidak, saya buat logika baru / saya hapus logika Cloudinary":** Anda tinggal balas di chat Replit: *"Please revert the audio downloader logic to use the multi-Cloudinary failover from the GitHub commit, and read the `CLOUDINARY_ACCOUNTS_JSON` secret."* (Replit Agent sangat pintar, dia akan langsung memperbaikinya kembali dalam hitungan detik).
+
+Silakan kirimkan pertanyaan itu ke dia, dan beri tahu saya apa jawabannya! 🚀
