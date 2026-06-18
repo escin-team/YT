@@ -1,4 +1,5 @@
-"""Audio downloader service using yt-dlp with Cloudinary multi-account failover."""
+"""Audio downloader service using yt-dlp with Cloudinary multi-account failover
+and smart cache (check Cloudinary before downloading from YouTube)."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 import cloudinary
+import cloudinary.api
 import cloudinary.uploader
 from cloudinary.exceptions import Error as CloudinaryError
 
@@ -30,7 +32,12 @@ logger = logging.getLogger(__name__)
 
 class AudioDownloaderService:
     """Service for downloading YouTube audio as MP3 using yt-dlp,
-    then uploading to Cloudinary with multi-account auto-failover."""
+    then uploading to Cloudinary with multi-account auto-failover.
+
+    On every request the service first checks whether the video already
+    exists on any configured Cloudinary account (Smart Cache).  If found,
+    the Cloudinary URL is returned immediately — no yt-dlp download needed.
+    """
 
     def __init__(self) -> None:
         self.config = get_settings()
@@ -62,38 +69,49 @@ class AudioDownloaderService:
     # ------------------------------------------------------------------
 
     async def download_and_convert(self, video_id: str) -> AudioFile:
-        """Download a YouTube video, convert to MP3, upload to Cloudinary,
-        then delete the local file.
+        """Smart-cache entry point.
+
+        Order of operations:
+        1. Check every Cloudinary account for an existing resource matching
+           the video_id — if found, return immediately (no yt-dlp needed).
+        2. Run yt-dlp to download + convert to MP3.
+        3. Upload the MP3 to Cloudinary (multi-account failover).
+        4. Delete the local temp file after a successful upload.
+        5. Return AudioFile with Cloudinary URL (or local path as fallback).
 
         Args:
             video_id: YouTube video ID (11 characters)
 
         Returns:
-            AudioFile: Metadata including Cloudinary URL (or local path as fallback)
+            AudioFile: Metadata including URL (Cloudinary or local fallback)
 
         Raises:
             VideoNotFoundError, DurationExceededError, LiveStreamError,
             DownloadFailedError, StorageFullError
         """
-        # Step 1 — download and convert locally
+        # ── Step 1: Smart Cache — check Cloudinary before downloading ──
+        cached = await self._check_cloudinary_cache(video_id)
+        if cached:
+            logger.info(f"Smart cache hit for {video_id} — skipping download.")
+            return cached
+
+        # ── Step 2: Download and convert locally via yt-dlp ──
         mp3_path, title, duration = await self._run_ytdlp(video_id)
         file_size = mp3_path.stat().st_size
 
-        # Step 2 — upload to Cloudinary (with failover); delete local on success
-        cloudinary_url = await self._upload_to_cloudinary(video_id, title, mp3_path)
+        # ── Step 3: Upload to Cloudinary (with failover) ──
+        cloudinary_url = await self._upload_to_cloudinary(video_id, title, duration, mp3_path)
 
+        # ── Step 4: Delete local temp file on success ──
         if cloudinary_url:
-            # Successfully uploaded — remove temp file to free disk space
             try:
                 mp3_path.unlink()
                 logger.info(f"Deleted local temp file after Cloudinary upload: {mp3_path}")
             except OSError as exc:
                 logger.warning(f"Could not delete temp file {mp3_path}: {exc}")
-
             file_path = cloudinary_url
         else:
-            # All Cloudinary accounts failed (or none configured) — fall back to local
-            logger.warning(f"Falling back to local storage for {video_id}")
+            logger.warning(f"All Cloudinary accounts failed — serving {video_id} from local storage.")
             file_path = str(mp3_path)
 
         return AudioFile(
@@ -109,9 +127,8 @@ class AudioDownloaderService:
         self,
         video_ids: list[str],
     ) -> tuple[Path, dict[str, tuple[bool, Optional[AudioFile], Optional[str]]]]:
-        """Download multiple YouTube videos as MP3, upload each to Cloudinary,
-        then package the Cloudinary URLs into a ZIP manifest (or the local files
-        if Cloudinary is unavailable).
+        """Download multiple YouTube videos, upload each to Cloudinary,
+        then package local files (fallback) into a ZIP.
 
         Args:
             video_ids: List of YouTube video IDs
@@ -134,7 +151,7 @@ class AudioDownloaderService:
             for _vid, (success, audio_file, _) in results.items():
                 if success and audio_file:
                     local_path = Path(audio_file.file_path)
-                    # Only include if it's actually a local file (not a Cloudinary URL)
+                    # Only zip actual local files, not Cloudinary URLs
                     if local_path.exists():
                         zf.write(local_path, local_path.name)
 
@@ -145,6 +162,69 @@ class AudioDownloaderService:
     # Private helpers
     # ------------------------------------------------------------------
 
+    async def _check_cloudinary_cache(self, video_id: str) -> Optional[AudioFile]:
+        """Check every configured Cloudinary account for an existing resource.
+
+        Uses ``video_id`` as the Cloudinary ``public_id`` (resource_type="video").
+        Retrieves title and duration from the resource's context metadata if
+        they were stored during the original upload.
+
+        Returns:
+            AudioFile if found on any account, otherwise None.
+        """
+        if not self.cloudinary_accounts:
+            return None
+
+        for i, account in enumerate(self.cloudinary_accounts):
+            account_name = account.get("name", f"account-{i + 1}")
+            try:
+                cloudinary.config(
+                    cloud_name=account["cloud_name"],
+                    api_key=account["api_key"],
+                    api_secret=account["api_secret"],
+                    secure=True,
+                )
+                # This raises cloudinary.exceptions.NotFound (404) if absent
+                resource = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: cloudinary.api.resource(
+                        video_id,
+                        resource_type="video",
+                    ),
+                )
+
+                secure_url: str = resource["secure_url"]
+
+                # Recover title and duration stored in context during upload
+                context = resource.get("context", {}).get("custom", {})
+                title = context.get("title", video_id)
+                try:
+                    duration = int(context.get("duration", 0))
+                except (ValueError, TypeError):
+                    duration = 0
+
+                file_size = resource.get("bytes", 0)
+
+                logger.info(
+                    f"Cloudinary smart cache hit on {account_name} for {video_id}: {secure_url}"
+                )
+                return AudioFile(
+                    video_id=video_id,
+                    file_name=f"{video_id}.mp3",
+                    file_path=secure_url,
+                    file_size=file_size,
+                    duration=duration,
+                    title=title,
+                )
+
+            except CloudinaryError:
+                # NotFound or any other Cloudinary error — try next account
+                logger.debug(f"Not found on {account_name}, checking next account...")
+            except Exception as exc:
+                logger.warning(f"Cloudinary cache check failed on {account_name}: {exc}")
+
+        return None
+
     async def _run_ytdlp(self, video_id: str) -> tuple[Path, str, int]:
         """Run yt-dlp to download and convert to MP3.
 
@@ -152,8 +232,8 @@ class AudioDownloaderService:
             (mp3_path, title, duration_seconds)
         """
         url = f"https://www.youtube.com/watch?v={video_id}"
-        max_duration = self.config.max_video_duration  # 420 s by default (env override)
-        bitrate = self.config.audio_bitrate            # 128 kbps by default
+        max_duration = self.config.max_video_duration  # 420 s (env: MAX_VIDEO_DURATION)
+        bitrate = self.config.audio_bitrate            # 128 kbps (env: AUDIO_BITRATE)
         output_template = str(self.download_dir / f"{video_id}.%(ext)s")
 
         cmd = [
@@ -169,7 +249,10 @@ class AudioDownloaderService:
             url,
         ]
 
-        logger.info(f"yt-dlp starting: video_id={video_id} max_duration={max_duration}s bitrate={bitrate}kbps")
+        logger.info(
+            f"yt-dlp starting: video_id={video_id} "
+            f"max_duration={max_duration}s bitrate={bitrate}kbps"
+        )
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -239,66 +322,64 @@ class AudioDownloaderService:
         return mp3_path, title, duration
 
     async def _upload_to_cloudinary(
-        self, video_id: str, title: str, mp3_path: Path
+        self, video_id: str, title: str, duration: int, mp3_path: Path
     ) -> Optional[str]:
         """Upload an MP3 to Cloudinary using multi-account auto-failover.
 
-        Iterates through self.cloudinary_accounts in order. Returns the
-        secure Cloudinary URL on first success, or None if all accounts fail
-        (or none are configured).
+        - public_id  = video_id  (deterministic; enables smart cache lookups)
+        - resource_type = "video"  (required for MP3 streaming on Cloudinary)
+        - context stores title + duration for retrieval on cache hits
+        - Iterates accounts in order; returns the secure URL on first success.
 
-        Uses resource_type="video" so Cloudinary allows MP3 streaming.
+        Returns:
+            Cloudinary secure_url on success, or None if all accounts fail.
         """
         if not self.cloudinary_accounts:
             return None
 
-        safe_title = "".join(
-            c for c in title if c.isalpha() or c.isdigit() or c == " "
-        ).strip()
-        public_id = f"{video_id}_{safe_title}" if safe_title else video_id
-
         for i, account in enumerate(self.cloudinary_accounts):
             account_name = account.get("name", f"account-{i + 1}")
-            logger.info(f"Trying Cloudinary upload — {account_name} ({i + 1}/{len(self.cloudinary_accounts)})")
+            logger.info(
+                f"Cloudinary upload attempt — {account_name} "
+                f"({i + 1}/{len(self.cloudinary_accounts)})"
+            )
             try:
-                # Configure Cloudinary for this specific account
                 cloudinary.config(
                     cloud_name=account["cloud_name"],
                     api_key=account["api_key"],
                     api_secret=account["api_secret"],
-                    secure=True,  # Always use HTTPS URLs
+                    secure=True,
                 )
 
-                # Upload as resource_type="video" so the MP3 is streamable
-                response = cloudinary.uploader.upload(
-                    str(mp3_path),
-                    resource_type="video",
-                    public_id=public_id,
-                    format="mp3",
-                    overwrite=True,
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: cloudinary.uploader.upload(
+                        str(mp3_path),
+                        resource_type="video",       # required for MP3 streaming
+                        public_id=video_id,          # use video_id for deterministic lookup
+                        format="mp3",
+                        overwrite=True,
+                        context=f"title={title}|duration={duration}",
+                    ),
                 )
 
                 secure_url: str = response["secure_url"]
-                logger.info(
-                    f"Cloudinary upload success via {account_name}: {secure_url}"
-                )
+                logger.info(f"Cloudinary upload success via {account_name}: {secure_url}")
                 return secure_url
 
             except (CloudinaryError, KeyError, Exception) as exc:
-                logger.warning(
-                    f"Cloudinary upload failed for {account_name}: {exc}"
-                )
+                logger.warning(f"Cloudinary upload failed on {account_name}: {exc}")
                 if i < len(self.cloudinary_accounts) - 1:
-                    logger.info("Trying next Cloudinary account...")
+                    logger.info("Failing over to next Cloudinary account...")
                 else:
-                    logger.error("All Cloudinary accounts exhausted — no upload possible.")
+                    logger.error("All Cloudinary accounts exhausted — upload failed.")
 
         return None
 
     async def _safe_download(
         self, video_id: str
     ) -> tuple[bool, Optional[AudioFile], Optional[str]]:
-        """Wrapper that silently catches errors for use in batch downloads."""
+        """Wraps download_and_convert to silently catch errors for batch downloads."""
         try:
             audio_file = await self.download_and_convert(video_id)
             return (True, audio_file, None)
