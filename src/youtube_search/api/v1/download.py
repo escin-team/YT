@@ -206,6 +206,8 @@ async def download_audio(
                     duration=int(cached_audio.duration),
                     download_url=download_url,
                     cached=True,
+                    storage_source=cached_audio.storage_source,
+                    storage_account=cached_audio.storage_account,
                     file_size=cached_audio.file_size,
                 )
 
@@ -244,7 +246,9 @@ async def download_audio(
                 title=audio_file.title,
                 duration=audio_file.duration,
                 download_url=download_url,
-                cached=False,
+                cached=audio_file.cached,
+                storage_source=audio_file.storage_source,
+                storage_account=audio_file.storage_account,
                 file_size=audio_file.file_size,
             )
 

@@ -44,11 +44,14 @@ class AudioFile(BaseModel):
 
     video_id: str = Field(..., description="YouTube 影片 ID")
     file_name: str = Field(..., description="本地檔案名稱（無路徑）")
-    file_path: str = Field(..., description="完整檔案路徑")
+    file_path: str = Field(..., description="完整檔案路徑或 Cloudinary URL")
     file_size: int = Field(..., ge=0, description="檔案大小（字節）")
     duration: int = Field(..., ge=0, description="音檔長度（秒）")
     title: str = Field(..., description="影片標題")
     created_at: datetime = Field(default_factory=datetime.utcnow, description="建立時間")
+    cached: bool = Field(default=False, description="True 表示由 Cloudinary Smart Cache 命中")
+    storage_source: str = Field(default="local", description="儲存來源：'cloudinary' 或 'local'")
+    storage_account: str = Field(default="", description="Cloudinary 帳號名稱（若適用）")
 
 
 class DownloadLog(BaseModel):
@@ -95,9 +98,17 @@ class DownloadAudioResponse(BaseModel):
         default=None,
         description="下載連結（format=link 時返回）",
     )
+    storage_source: str = Field(
+        default="local",
+        description="儲存來源：'cloudinary' 或 'local'",
+    )
+    storage_account: str = Field(
+        default="",
+        description="使用的 Cloudinary 帳號名稱（若適用）",
+    )
     cached: bool = Field(
         default=False,
-        description="是否從快取直接返回",
+        description="True = Cloudinary Smart Cache 命中；False = 新下載",
     )
     file_size: Optional[int] = Field(
         default=None,

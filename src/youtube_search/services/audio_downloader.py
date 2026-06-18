@@ -7,10 +7,26 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# Detect Bun for yt-dlp's JS runtime (lighter than Node.js, ~20 MB RAM).
+# Falls back to None when Bun is not installed — yt-dlp will warn but
+# still work for formats that don't need JS decryption.
+_BUN_BIN: Optional[str] = (
+    shutil.which("bun")
+    or (
+        os.path.expanduser("~/.bun/bin/bun")
+        if os.path.isfile(os.path.expanduser("~/.bun/bin/bun"))
+        else None
+    )
+)
+if _BUN_BIN:
+    logger_init = logging.getLogger(__name__)
+    logger_init.info(f"Bun detected at {_BUN_BIN} — will pass --js-runtimes to yt-dlp")
 
 import cloudinary
 import cloudinary.api
@@ -90,17 +106,22 @@ class AudioDownloaderService:
             DownloadFailedError, StorageFullError
         """
         # ── Step 1: Smart Cache — check Cloudinary before downloading ──
-        cached = await self._check_cloudinary_cache(video_id)
-        if cached:
-            logger.info(f"Smart cache hit for {video_id} — skipping download.")
-            return cached
+        cached_hit = await self._check_cloudinary_cache(video_id)
+        if cached_hit:
+            logger.info(
+                f"Smart cache HIT for {video_id} via {cached_hit.storage_account} "
+                "— skipping download."
+            )
+            return cached_hit
 
         # ── Step 2: Download and convert locally via yt-dlp ──
         mp3_path, title, duration = await self._run_ytdlp(video_id)
         file_size = mp3_path.stat().st_size
 
         # ── Step 3: Upload to Cloudinary (with failover) ──
-        cloudinary_url = await self._upload_to_cloudinary(video_id, title, duration, mp3_path)
+        cloudinary_url, used_account = await self._upload_to_cloudinary(
+            video_id, title, duration, mp3_path
+        )
 
         # ── Step 4: Delete local temp file on success ──
         if cloudinary_url:
@@ -110,9 +131,14 @@ class AudioDownloaderService:
             except OSError as exc:
                 logger.warning(f"Could not delete temp file {mp3_path}: {exc}")
             file_path = cloudinary_url
+            storage_source = "cloudinary"
         else:
-            logger.warning(f"All Cloudinary accounts failed — serving {video_id} from local storage.")
+            logger.warning(
+                f"All Cloudinary accounts failed — serving {video_id} from local storage."
+            )
             file_path = str(mp3_path)
+            storage_source = "local"
+            used_account = ""
 
         return AudioFile(
             video_id=video_id,
@@ -121,6 +147,9 @@ class AudioDownloaderService:
             file_size=file_size,
             duration=duration,
             title=title,
+            cached=False,
+            storage_source=storage_source,
+            storage_account=used_account,
         )
 
     async def batch_download_as_zip(
@@ -206,7 +235,7 @@ class AudioDownloaderService:
                 file_size = resource.get("bytes", 0)
 
                 logger.info(
-                    f"Cloudinary smart cache hit on {account_name} for {video_id}: {secure_url}"
+                    f"Cloudinary smart cache HIT on {account_name} for {video_id}: {secure_url}"
                 )
                 return AudioFile(
                     video_id=video_id,
@@ -215,6 +244,9 @@ class AudioDownloaderService:
                     file_size=file_size,
                     duration=duration,
                     title=title,
+                    cached=True,
+                    storage_source="cloudinary",
+                    storage_account=account_name,
                 )
 
             except CloudinaryError:
@@ -242,8 +274,13 @@ class AudioDownloaderService:
             "--no-update",
             "--dump-single-json",
             "--skip-download",
-            url,
         ]
+        if _BUN_BIN:
+            meta_cmd += [
+                "--js-runtimes", f"bun:{_BUN_BIN}",
+                "--remote-components", "ejs:github",
+            ]
+        meta_cmd.append(url)
         try:
             meta_proc = await asyncio.create_subprocess_exec(
                 *meta_cmd,
@@ -316,8 +353,13 @@ class AudioDownloaderService:
             "--match-filter", f"duration <= {max_duration}",
             "--no-progress",
             "--output", output_template,
-            url,
         ]
+        if _BUN_BIN:
+            cmd += [
+                "--js-runtimes", f"bun:{_BUN_BIN}",
+                "--remote-components", "ejs:github",
+            ]
+        cmd.append(url)
 
         logger.info(
             f"yt-dlp download starting: video_id={video_id} "
@@ -394,19 +436,19 @@ class AudioDownloaderService:
 
     async def _upload_to_cloudinary(
         self, video_id: str, title: str, duration: int, mp3_path: Path
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], str]:
         """Upload an MP3 to Cloudinary using multi-account auto-failover.
 
         - public_id  = video_id  (deterministic; enables smart cache lookups)
         - resource_type = "video"  (required for MP3 streaming on Cloudinary)
         - context stores title + duration for retrieval on cache hits
-        - Iterates accounts in order; returns the secure URL on first success.
+        - Iterates accounts in order; returns on first success.
 
         Returns:
-            Cloudinary secure_url on success, or None if all accounts fail.
+            (secure_url, account_name) on success, or (None, "") if all fail.
         """
         if not self.cloudinary_accounts:
-            return None
+            return None, ""
 
         for i, account in enumerate(self.cloudinary_accounts):
             account_name = account.get("name", f"account-{i + 1}")
@@ -436,7 +478,7 @@ class AudioDownloaderService:
 
                 secure_url: str = response["secure_url"]
                 logger.info(f"Cloudinary upload success via {account_name}: {secure_url}")
-                return secure_url
+                return secure_url, account_name
 
             except (CloudinaryError, KeyError, Exception) as exc:
                 logger.warning(f"Cloudinary upload failed on {account_name}: {exc}")
@@ -445,7 +487,7 @@ class AudioDownloaderService:
                 else:
                     logger.error("All Cloudinary accounts exhausted — upload failed.")
 
-        return None
+        return None, ""
 
     async def _safe_download(
         self, video_id: str
