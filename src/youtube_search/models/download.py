@@ -199,3 +199,24 @@ class PrefetchResponse(BaseModel):
         default=[],
         description="格式無效而略過的影片 ID",
     )
+
+
+class SearchAndPrefetchResponse(BaseModel):
+    """搜尋 + 自動預熱回應。
+
+    回傳完整搜尋結果，同時在背景預熱排名最前的 2 支影片。
+    """
+
+    search_keyword: str = Field(..., description="搜尋關鍵字")
+    result_count: int = Field(..., ge=0, description="返回影片數量")
+    videos: list = Field(default_factory=list, description="影片清單（完整結果）")
+    timestamp: str = Field(..., description="搜尋時間戳記（ISO 8601 UTC）")
+    prefetch_queued: list[str] = Field(
+        default=[],
+        description="已排入背景預熱佇列的影片 ID（最多 2 個）",
+    )
+    prefetch_count: int = Field(
+        default=0,
+        ge=0,
+        description="實際排入預熱佇列的數量",
+    )

@@ -15,6 +15,7 @@ from youtube_search.api.v1.docs import router as docs_router
 from youtube_search.api.v1.download import router as download_router
 from youtube_search.api.v1.playlist import router as playlist_router
 from youtube_search.api.v1.search import router as search_router
+from youtube_search.api.v1.search_prefetch import router as search_prefetch_router
 from youtube_search.config import get_settings
 from youtube_search.mcp.router import router as mcp_router
 from youtube_search.services.cache import get_cache_service
@@ -64,6 +65,7 @@ app.add_middleware(
 # 包含所有路由
 app.include_router(docs_router)
 app.include_router(search_router)
+app.include_router(search_prefetch_router)
 app.include_router(download_router)
 app.include_router(playlist_router)
 app.include_router(mcp_router)
