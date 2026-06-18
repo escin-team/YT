@@ -225,8 +225,74 @@ class AudioDownloaderService:
 
         return None
 
+    async def _fetch_video_metadata(
+        self, video_id: str, url: str, max_duration: int
+    ) -> tuple[str, int]:
+        """Phase 1: Fetch title and duration without downloading.
+
+        Uses --dump-single-json --skip-download which is not affected by the
+        --print simulation bug present in yt-dlp ≥ 2025.x.
+
+        Raises DurationExceededError early if the video is too long.
+        Returns (title, duration_seconds).
+        """
+        meta_cmd = [
+            "yt-dlp",
+            "--no-playlist",
+            "--no-update",
+            "--dump-single-json",
+            "--skip-download",
+            url,
+        ]
+        try:
+            meta_proc = await asyncio.create_subprocess_exec(
+                *meta_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            meta_stdout, meta_stderr = await asyncio.wait_for(
+                meta_proc.communicate(),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Metadata fetch timed out for {video_id} — using fallback values")
+            return video_id, 0
+
+        if meta_proc.returncode != 0:
+            err = meta_stderr.decode("utf-8", errors="replace").lower()
+            if "video unavailable" in err or "not available" in err:
+                raise VideoNotFoundError(video_id=video_id)
+            if "is a live event" in err or "live stream" in err:
+                raise LiveStreamError(video_id=video_id)
+            # Non-fatal: proceed with fallback values
+            logger.warning(
+                f"Metadata fetch failed for {video_id} (rc={meta_proc.returncode}) — "
+                "continuing with fallback title/duration"
+            )
+            return video_id, 0
+
+        try:
+            import json as _json
+            info = _json.loads(meta_stdout.decode("utf-8", errors="replace"))
+            title: str = info.get("title") or video_id
+            duration: int = int(info.get("duration") or 0)
+        except Exception as exc:
+            logger.warning(f"Could not parse metadata JSON for {video_id}: {exc}")
+            return video_id, 0
+
+        if duration > max_duration:
+            raise DurationExceededError(video_id=video_id, max_duration=max_duration)
+
+        logger.info(f"Metadata fetched: title={title!r} duration={duration}s")
+        return title, duration
+
     async def _run_ytdlp(self, video_id: str) -> tuple[Path, str, int]:
         """Run yt-dlp to download and convert to MP3.
+
+        Two-phase approach to work around the yt-dlp ≥ 2025.x bug where
+        --print causes simulation mode (no file written):
+          Phase 1 — _fetch_video_metadata(): dump JSON without downloading
+          Phase 2 — actual download (no --print flag)
 
         Returns:
             (mp3_path, title, duration_seconds)
@@ -236,22 +302,27 @@ class AudioDownloaderService:
         bitrate = self.config.audio_bitrate            # 128 kbps (env: AUDIO_BITRATE)
         output_template = str(self.download_dir / f"{video_id}.%(ext)s")
 
+        # ── Phase 1: fetch metadata (fast, no download) ───────────────────
+        title, duration = await self._fetch_video_metadata(video_id, url, max_duration)
+
+        # ── Phase 2: download + convert (no --print to avoid simulation) ──
         cmd = [
             "yt-dlp",
             "--no-playlist",
+            "--no-update",
             "-x",
             "--audio-format", "mp3",
             "--audio-quality", f"{bitrate}K",
             "--match-filter", f"duration <= {max_duration}",
-            "--print", "%(title)s|||%(duration)s",
             "--no-progress",
             "--output", output_template,
             url,
         ]
 
         logger.info(
-            f"yt-dlp starting: video_id={video_id} "
-            f"max_duration={max_duration}s bitrate={bitrate}kbps"
+            f"yt-dlp download starting: video_id={video_id} "
+            f"title={title!r} max_duration={max_duration}s bitrate={bitrate}kbps\n"
+            f"  cmd: {' '.join(cmd)}"
         )
 
         try:
@@ -271,11 +342,10 @@ class AudioDownloaderService:
                 reason=f"Download exceeded {self.config.download_timeout}s timeout",
             )
 
-        stdout_text = stdout.decode("utf-8", errors="replace").strip()
         stderr_text = stderr.decode("utf-8", errors="replace")
 
         if process.returncode != 0:
-            logger.error(f"yt-dlp error for {video_id}: {stderr_text[:300]}")
+            logger.error(f"yt-dlp download error for {video_id}: {stderr_text[:500]}")
             err_lower = stderr_text.lower()
             if "video unavailable" in err_lower or "not available" in err_lower:
                 raise VideoNotFoundError(video_id=video_id)
@@ -291,34 +361,35 @@ class AudioDownloaderService:
                 reason=stderr_text[:500],
             )
 
-        # Parse title and duration from yt-dlp --print output
-        title = video_id
-        duration = 0
-        if stdout_text:
-            lines = [line for line in stdout_text.splitlines() if "|||" in line]
-            if lines:
-                parts = lines[-1].split("|||")
-                if len(parts) >= 2:
-                    title = parts[0].strip() or video_id
-                    try:
-                        duration = int(float(parts[1].strip()))
-                    except (ValueError, TypeError):
-                        duration = 0
+        # ── Locate the output MP3 file ────────────────────────────────────
+        expected_path = self.download_dir / f"{video_id}.mp3"
+        dir_contents = list(self.download_dir.iterdir())
+        logger.debug(
+            f"yt-dlp finished (rc=0). Expected: {expected_path}. "
+            f"Download dir contents: {[f.name for f in dir_contents]}"
+        )
 
-        # Locate the output MP3 file
-        mp3_path = self.download_dir / f"{video_id}.mp3"
+        mp3_path = expected_path
         if not mp3_path.exists():
-            matches = list(self.download_dir.glob(f"{video_id}*.mp3"))
+            matches = [f for f in dir_contents if f.name.startswith(video_id) and f.suffix == ".mp3"]
             if matches:
                 mp3_path = matches[0]
+                logger.info(f"MP3 found via glob fallback: {mp3_path.name}")
             else:
+                logger.error(
+                    f"MP3 not found after yt-dlp completed for {video_id}. "
+                    f"Dir contents: {[f.name for f in dir_contents]}"
+                )
                 raise DownloadFailedError(
                     message="下載後找不到音檔",
                     video_id=video_id,
-                    reason="MP3 file not found after yt-dlp completed",
+                    reason=(
+                        f"MP3 file not found after yt-dlp completed. "
+                        f"Download dir contains: {[f.name for f in dir_contents]}"
+                    ),
                 )
 
-        logger.info(f"yt-dlp complete: {mp3_path.name} ({mp3_path.stat().st_size} bytes)")
+        logger.info(f"yt-dlp complete: {mp3_path.name} ({mp3_path.stat().st_size:,} bytes)")
         return mp3_path, title, duration
 
     async def _upload_to_cloudinary(
