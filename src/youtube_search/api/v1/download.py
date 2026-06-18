@@ -10,7 +10,7 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Header, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from youtube_search.config import get_settings
 from youtube_search.models.download import (
@@ -174,9 +174,12 @@ async def download_audio(
         cached_audio = await cache_service.get_cached_audio(validated_video_id)
         if cached_audio:
             logger.info(f"快取命中: {validated_video_id}")
+            is_cloudinary = cached_audio.file_path.startswith("http")
 
             if format == DownloadFormat.STREAM:
-                # 返回 MP3 檔案流
+                if is_cloudinary:
+                    # Cloudinary URL — redirect the client to stream directly
+                    return RedirectResponse(url=cached_audio.file_path, status_code=302)
                 safe_filename = sanitize_filename(cached_audio.title)
                 return FileResponse(
                     path=cached_audio.file_path,
@@ -185,10 +188,14 @@ async def download_audio(
                 )
             else:
                 # 返回 JSON 回應（快取）
-                download_url = generate_download_url(
-                    config.download_base_url,
-                    validated_video_id,
-                    cached_audio.title,
+                download_url = (
+                    cached_audio.file_path
+                    if is_cloudinary
+                    else generate_download_url(
+                        config.download_base_url,
+                        validated_video_id,
+                        cached_audio.title,
+                    )
                 )
                 return DownloadAudioResponse(
                     video_id=validated_video_id,
@@ -206,8 +213,12 @@ async def download_audio(
         # 快取音檔信息
         await cache_service.set_cached_audio(audio_file)
 
+        is_cloudinary = audio_file.file_path.startswith("http")
+
         if format == DownloadFormat.STREAM:
-            # 返回 MP3 檔案流
+            if is_cloudinary:
+                # Cloudinary URL — redirect the client to stream directly
+                return RedirectResponse(url=audio_file.file_path, status_code=302)
             safe_filename = sanitize_filename(audio_file.title)
             return FileResponse(
                 path=audio_file.file_path,
@@ -216,15 +227,19 @@ async def download_audio(
             )
         else:
             # 返回 JSON 回應
-            download_url = generate_download_url(
-                config.download_base_url,
-                validated_video_id,
-                audio_file.title,
+            download_url = (
+                audio_file.file_path
+                if is_cloudinary
+                else generate_download_url(
+                    config.download_base_url,
+                    validated_video_id,
+                    audio_file.title,
+                )
             )
             return DownloadAudioResponse(
                 video_id=validated_video_id,
                 title=audio_file.title,
-                duration=0,  # 需要解析 MP3 獲取精確長度
+                duration=audio_file.duration,
                 download_url=download_url,
                 cached=False,
                 file_size=audio_file.file_size,
