@@ -158,3 +158,44 @@ class BatchDownloadResponse(BaseModel):
         default=[],
         description="各影片下載詳細結果（僅包含失敗項目以供調試）",
     )
+
+
+class PrefetchRequest(BaseModel):
+    """預熱快取請求。
+
+    接受 JSON 陣列或逗號分隔字串：
+    - JSON:  {"video_ids": ["id1", "id2"]}
+    - 字串:  {"video_ids": "id1,id2,id3"}
+    """
+
+    video_ids: list[str] | str = Field(
+        ...,
+        description="YouTube 影片 ID 清單（JSON 陣列或逗號分隔字串，最多 50 個）",
+    )
+
+    def parsed_ids(self) -> list[str]:
+        """Normalise to a flat deduplicated list regardless of input format."""
+        if isinstance(self.video_ids, str):
+            ids = [v.strip() for v in self.video_ids.split(",") if v.strip()]
+        else:
+            ids = [v.strip() for v in self.video_ids if v.strip()]
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for vid in ids:
+            if vid not in seen:
+                seen.add(vid)
+                unique.append(vid)
+        return unique[:50]  # hard cap
+
+
+class PrefetchResponse(BaseModel):
+    """預熱快取回應（立即返回，背景處理）。"""
+
+    status: str = Field(..., description="Always 'prefetch_started'")
+    count: int = Field(..., ge=0, description="已排入背景佇列的有效影片數量")
+    video_ids: list[str] = Field(..., description="已排入佇列的影片 ID 清單")
+    skipped: list[str] = Field(
+        default=[],
+        description="格式無效而略過的影片 ID",
+    )

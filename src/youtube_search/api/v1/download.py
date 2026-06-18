@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, BackgroundTasks, Header, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from youtube_search.config import get_settings
@@ -19,6 +20,8 @@ from youtube_search.models.download import (
     BatchDownloadResponse,
     DownloadAudioResponse,
     DownloadFormat,
+    PrefetchRequest,
+    PrefetchResponse,
 )
 from youtube_search.services.audio_downloader import AudioDownloaderService
 from youtube_search.services.cache_manager import CacheManagerService
@@ -422,3 +425,133 @@ async def batch_download(
             status_code=503,
             content=error.to_response(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Prefetch endpoint
+# ---------------------------------------------------------------------------
+
+async def _run_prefetch(video_ids: list[str]) -> None:
+    """Background coroutine: smart-cache each video ID sequentially.
+
+    Uses the same AudioDownloaderService.download_and_convert logic, which
+    checks Cloudinary first and only runs yt-dlp when necessary.  Errors for
+    individual IDs are logged but do not abort the remaining IDs.
+    """
+    logger.info(f"[prefetch] Starting background prefetch for {len(video_ids)} video(s).")
+    succeeded = 0
+    skipped_cache = 0
+    failed = 0
+
+    for video_id in video_ids:
+        try:
+            audio = await downloader_service.download_and_convert(video_id)
+            if audio.file_path.startswith("http"):
+                # Cloudinary smart cache hit or fresh upload — cache in Redis too
+                await cache_service.set_cached_audio(audio)
+                skipped_cache += 1 if audio.cached else 0
+                succeeded += 1
+                logger.info(f"[prefetch] ✓ {video_id} → {audio.file_path}")
+            else:
+                succeeded += 1
+                logger.info(f"[prefetch] ✓ {video_id} (local fallback)")
+        except Exception as exc:
+            failed += 1
+            logger.warning(f"[prefetch] ✗ {video_id}: {exc}")
+
+    logger.info(
+        f"[prefetch] Complete — succeeded: {succeeded}, failed: {failed} "
+        f"(total: {len(video_ids)})"
+    )
+
+
+@router.post(
+    "/prefetch",
+    response_model=PrefetchResponse,
+    summary="預熱 Cloudinary 快取（背景執行）",
+    responses={
+        200: {
+            "description": "預熱任務已啟動，立即返回",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "prefetch_started",
+                        "count": 3,
+                        "video_ids": ["dQw4w9WgXcQ", "jNQXAC9IVRw", "9bZkp7q19f0"],
+                        "skipped": [],
+                    }
+                }
+            },
+        },
+        400: {"description": "無有效的影片 ID"},
+    },
+)
+async def prefetch_audio(
+    request: Request,
+    prefetch_request: PrefetchRequest,
+    background_tasks: BackgroundTasks,
+    x_forwarded_for: Optional[str] = Header(None),
+) -> PrefetchResponse:
+    """
+    預熱 Cloudinary 快取 — 接受影片 ID 清單，立即返回，背景執行下載與上傳。
+
+    ### 工作流程
+    1. 對每個影片 ID 執行 Smart Cache 檢查（Cloudinary → yt-dlp）
+    2. 若 Cloudinary 已有快取，跳過下載直接返回
+    3. 若無快取，下載 → 上傳至 Cloudinary → 刪除本地暫存檔
+    4. 結果寫入 Redis 快取（若可用）
+
+    ### 請求格式
+    - JSON 陣列：`{"video_ids": ["id1", "id2", "id3"]}`
+    - 逗號分隔：`{"video_ids": "id1,id2,id3"}`
+    - 最多 50 個影片 ID
+
+    ### 範例
+
+    ```bash
+    # 預熱播放清單中的熱門歌曲
+    curl -X POST "http://localhost:5000/api/v1/download/prefetch" \\
+      -H "Content-Type: application/json" \\
+      -d '{"video_ids": ["dQw4w9WgXcQ", "jNQXAC9IVRw", "9bZkp7q19f0"]}'
+    ```
+
+    回應立即返回；背景任務進度可從伺服器日誌觀察。
+    """
+    client_ip = x_forwarded_for or (request.client.host if request.client else "unknown")
+
+    # Normalise and validate all IDs up front
+    raw_ids = prefetch_request.parsed_ids()
+    valid_ids: list[str] = []
+    invalid_ids: list[str] = []
+
+    for vid in raw_ids:
+        try:
+            valid_ids.append(validate_video_id(vid))
+        except Exception:
+            invalid_ids.append(vid)
+
+    if not valid_ids:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "no_valid_ids",
+                "message": "請提供至少一個有效的 YouTube 影片 ID（11 字元）",
+                "skipped": invalid_ids,
+            },
+        )
+
+    logger.info(
+        f"[prefetch] Request from {client_ip}: "
+        f"{len(valid_ids)} valid, {len(invalid_ids)} invalid IDs"
+    )
+
+    # Fire-and-forget: schedule as a real asyncio Task so it survives beyond
+    # the HTTP request and is not bound to BackgroundTasks request lifecycle.
+    asyncio.create_task(_run_prefetch(valid_ids))
+
+    return PrefetchResponse(
+        status="prefetch_started",
+        count=len(valid_ids),
+        video_ids=valid_ids,
+        skipped=invalid_ids,
+    )
