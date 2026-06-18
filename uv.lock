@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -227,6 +227,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3d/fa/656b739db8587d7b5dfa22e22ed02566950fbfbcdc20311993483657a5c0/click-8.3.1.tar.gz", hash = "sha256:12ff4785d337a1bb490bb7e9c2b1ee5da3112e94a8622f26a6c77f5d2fc6842a", size = 295065, upload-time = "2025-11-15T20:45:42.706Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/98/78/01c019cdb5d6498122777c1a43056ebb3ebfeef2076d9d026bfe15583b2b/click-8.3.1-py3-none-any.whl", hash = "sha256:981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6", size = 108274, upload-time = "2025-11-15T20:45:41.139Z" },
+]
+
+[[package]]
+name = "cloudinary"
+version = "1.44.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "six" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/1b/ae48dbbe3c2ff81b94816dd6645af2d609e135cea4fcd65b1a8a61672cea/cloudinary-1.44.2.tar.gz", hash = "sha256:bc9139c68f2ef6996ba62a5d0300e63c711d4f6564644c0c82aa31bf641ef3c7", size = 188389, upload-time = "2026-04-16T08:18:19.92Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/8b/0da00a22362c89ef53f9d64af29546d24aba8533ffdb7bbcb19631c7f636/cloudinary-1.44.2-py3-none-any.whl", hash = "sha256:6624d06014c33f50c0c9e740fde1dfe4579d03311025d8bb7183824b7443aa09", size = 147805, upload-time = "2026-04-16T08:18:18.84Z" },
 ]
 
 [[package]]
@@ -1467,6 +1481,18 @@ wheels = [
 ]
 
 [[package]]
+name = "youtube-search"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5f/13/153d6841d0a9850e956f2f99987185c5b8477cc36fbabca24c4acf0321ff/youtube_search-2.2.0.tar.gz", hash = "sha256:5398a7cd65d9b75a8bac27ef689ec044abab3cbfa1f20d19db0277659ac70d98", size = 3313, upload-time = "2025-12-06T15:52:32.393Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/3d/7285e86e6390801fb177763a9cf1d81762487f98b3872ab5e1080bb82602/youtube_search-2.2.0-py3-none-any.whl", hash = "sha256:bdffbb5b22d7a7c85a88e6eeb6b00c5b5dbd29ea7b95139d21b8b8dab2ca5871", size = 3554, upload-time = "2025-12-06T15:52:31.217Z" },
+]
+
+[[package]]
 name = "yt-dlp"
 version = "2025.12.8"
 source = { registry = "https://pypi.org/simple" }
@@ -1481,6 +1507,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "cloudinary" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "httpx-sse" },
@@ -1499,6 +1526,7 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
     { name = "uvicorn" },
+    { name = "youtube-search" },
     { name = "yt-dlp" },
 ]
 
@@ -1532,6 +1560,7 @@ dev = [
 requires-dist = [
     { name = "anyio", specifier = ">=4.5" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.12.0" },
+    { name = "cloudinary", specifier = ">=1.38.0" },
     { name = "fastapi", specifier = ">=0.104.0" },
     { name = "httpx", specifier = ">=0.27.1" },
     { name = "httpx-sse", specifier = ">=0.4" },
@@ -1560,6 +1589,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.9.0" },
     { name = "typing-inspection", specifier = ">=0.4.1" },
     { name = "uvicorn", specifier = ">=0.31.1" },
+    { name = "youtube-search", specifier = ">=2.2.0" },
     { name = "yt-dlp", specifier = ">=2023.12.0" },
 ]
 provides-extras = ["dev", "test", "docs"]
