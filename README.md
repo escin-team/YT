@@ -1,37 +1,34 @@
-# YouTube Search API
+---
+title: YouTube Music Streaming API
+emoji: 🎵
+colorFrom: purple
+colorTo: blue
+sdk: docker
+pinned: false
+license: mit
+app_port: 7860
+---
 
-Zero-cost YouTube video search service powered by web scraping
+# 🎵 YouTube Music Streaming API
 
-## Features
+API backend untuk Music Player Streaming (YouTube to MP3).
 
-- ✅ No YouTube API key required - completely free
-- ✅ RESTful API design with Swagger documentation
-- ✅ MCP (Model Context Protocol) support - integrate with AI assistants
-- ✅ Redis caching optimization (1 hour TTL)
-- ✅ Complete video metadata extraction
-- ✅ Sorting and filtering capabilities
-- ✅ Docker containerization support
+## 🚀 Environment Variables (WAJIB di-set di HF Settings)
 
-## Quick Start
+| Variable | Value | Deskripsi |
+|----------|-------|-----------|
+| `CLOUDINARY_ACCOUNTS_JSON` | JSON Array | 3 akun Cloudinary |
+| `REDIS_ENABLED` | `false` | Disable Redis |
+| `DOWNLOAD_DIR` | `/tmp/youtube_audio` | Temp directory |
+| `MAX_VIDEO_DURATION` | `600` | Max 10 menit |
+| `AUDIO_BITRATE` | `128` | 128kbps |
 
-### Install Dependencies
+## 🔌 API Endpoints
 
-```bash
-uv sync
-```
-
-### Start the Service
-
-```bash
-python main.py
-```
-
-The service will start at `http://localhost:8000`.
-
-### API Documentation
-
-Visit `http://localhost:8000/docs` for interactive API documentation.
-
+- `POST /api/v1/search-and-prefetch` - Search & auto-cache
+- `POST /api/v1/download/audio` - Download MP3
+- `GET /health` - Health check
+- `GET /api/docs` - Swagger UI
 ## API Usage Examples
 
 ### Basic Search
