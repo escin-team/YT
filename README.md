@@ -1,32 +1,19 @@
----
-title: YouTube Music Streaming API
-emoji: 🎵
-colorFrom: purple
-colorTo: blue
-sdk: docker
-pinned: false
-license: mit
-app_port: 7860
----
-
 # 🎵 YouTube Music Streaming API
 
-API backend untuk Music Player Streaming (YouTube to MP3).
+Zero-cost YouTube music streaming API dengan Cloudinary storage.
 
-## 🚀 Environment Variables (WAJIB di-set di HF Settings)
+## 🚀 Deploy ke Platform Manapun
 
-| Variable | Value | Deskripsi |
-|----------|-------|-----------|
-| `CLOUDINARY_ACCOUNTS_JSON` | JSON Array | 3 akun Cloudinary |
-| `REDIS_ENABLED` | `false` | Disable Redis |
-| `DOWNLOAD_DIR` | `/tmp/youtube_audio` | Temp directory |
-| `MAX_VIDEO_DURATION` | `600` | Max 10 menit |
-| `AUDIO_BITRATE` | `128` | 128kbps |
+### **Prerequisites**
+- Docker installed
+- 3 Cloudinary accounts (free tier)
 
-## 🔌 API Endpoints
+### **1. Set Environment Variables**
 
-- `POST /api/v1/search-and-prefetch` - Search & auto-cache
-- `POST /api/v1/download/audio` - Download MP3
+Copy `.env.example` ke `.env` dan edit:
+
+```bash
+cp .env.example .env- `POST /api/v1/download/audio` - Download MP3
 - `GET /health` - Health check
 - `GET /api/docs` - Swagger UI
 ## API Usage Examples
