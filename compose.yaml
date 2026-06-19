@@ -1,0 +1,43 @@
+services:
+  yt-music-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yt-music-api
+    ports:
+      - "7860:7860"
+    environment:
+      # Cloudinary Configuration (3 accounts for failover)
+      - CLOUDINARY_ACCOUNTS_JSON=[{"name":"account1","cloud_name":"YOUR_CLOUD_NAME_1","api_key":"YOUR_API_KEY_1","api_secret":"YOUR_API_SECRET_1"},{"name":"account2","cloud_name":"YOUR_CLOUD_NAME_2","api_key":"YOUR_API_KEY_2","api_secret":"YOUR_API_SECRET_2"},{"name":"account3","cloud_name":"YOUR_CLOUD_NAME_3","api_key":"YOUR_API_KEY_3","api_secret":"YOUR_API_SECRET_3"}]
+      # Application Settings
+      - REDIS_ENABLED=false
+      - DOWNLOAD_DIR=/tmp/youtube_audio
+      - MAX_VIDEO_DURATION=600
+      - AUDIO_BITRATE=128
+      - API_HOST=0.0.0.0
+      - API_PORT=7860
+      - LOG_LEVEL=INFO
+    volumes:
+      - youtube_audio:/tmp/youtube_audio
+      - logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+# Volumes untuk persistent storage
+volumes:
+  youtube_audio:
+    name: youtube_audio_cache
+  logs:
+    name: yt_music_logs
